@@ -2,7 +2,6 @@ package storage
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -141,12 +140,9 @@ type RelationalDatabaseManager interface {
 
 func connectRdbms(s RelationalDatabaseManager) (*gorm.DB, error) {
 
-	log.Printf("Connecting to %v: %v", s.GetType().String(), s.GetConnectionString())
-
 	db, err := gorm.Open(s.GetDialector(), s.GetConfig())
 
 	if err != nil {
-		log.Printf("ErrOpenConnection: %v", err)
 		return nil, err
 	}
 
@@ -162,8 +158,6 @@ func reconnectRdbms(s RelationalDatabaseManager) (*gorm.DB, error) {
 		if err == nil {
 			return db, nil
 		}
-
-		log.Printf("Failed to connect to %v: %v", s.GetConnectionString(), err)
 
 		time.Sleep(interval)
 	}
