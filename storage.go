@@ -3,7 +3,6 @@ package storage
 import (
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -14,18 +13,27 @@ import (
 
 var (
 	connections map[string]*gorm.DB
-	once        sync.Once
 )
 
+type RDBMS int
+
 const (
-	MySQL = iota
+	MySQL RDBMS = iota
 	MariaDB
 	PostgreSQL
 	SQLServer
 )
 
+func (db RDBMS) String() string {
+	return [...]string{"MySQL", "MariaDB", "PostgreSQL", "SQLServer"}[db]
+}
+
+func (db RDBMS) Index() int {
+	return int(db)
+}
+
 type RelationalDatabase struct {
-	Type     int
+	Type     RDBMS
 	Host     string
 	Port     string
 	User     string
@@ -35,14 +43,14 @@ type RelationalDatabase struct {
 	Config   gorm.Config
 }
 
-func (db *RelationalDatabase) GetType() int {
+func (db *RelationalDatabase) GetType() RDBMS {
 	return db.Type
 }
 func (db *RelationalDatabase) GetConnectionString() string {
 	var dsn string
 
 	switch db.Type {
-	case 0:
+	case MySQL:
 		dsn = fmt.Sprintf(
 			"%s:%s@tcp(%s:%s)/%s?",
 			db.User,
@@ -56,7 +64,7 @@ func (db *RelationalDatabase) GetConnectionString() string {
 
 			dsn = fmt.Sprintf("%s&%s=%s", dsn, string(key), val)
 		}
-	case 1:
+	case MariaDB:
 		dsn = fmt.Sprintf(
 			"%s:%s@tcp(%s:%s)/%s?",
 			db.User,
@@ -70,7 +78,8 @@ func (db *RelationalDatabase) GetConnectionString() string {
 
 			dsn = fmt.Sprintf("%s&%s=%s", dsn, string(key), val)
 		}
-	case 2:
+
+	case PostgreSQL:
 		str := "host=%s user=%s password=%s dbname=%s port=%s"
 
 		dsn = fmt.Sprintf(str, db.Host, db.User, db.Password, db.Database, db.Port)
@@ -79,7 +88,7 @@ func (db *RelationalDatabase) GetConnectionString() string {
 
 			dsn = fmt.Sprintf("%s %s=%s", dsn, string(key), val)
 		}
-	case 3:
+	case SQLServer:
 		dsn = fmt.Sprintf(
 			"sqlserver://%s:%s@%s:%s?database=%s",
 			db.User,
@@ -88,7 +97,6 @@ func (db *RelationalDatabase) GetConnectionString() string {
 			db.Port,
 			db.Database,
 		)
-
 	}
 
 	return dsn
@@ -106,14 +114,14 @@ func (db *RelationalDatabase) GetDialector() gorm.Dialector {
 	var dialector gorm.Dialector
 
 	switch db.Type {
-	case 0:
+	case MySQL:
 		dialector = mysql.Open(db.GetConnectionString())
-	case 1:
+	case MariaDB:
 		dialector = mysql.Open(db.GetConnectionString())
-	case 2:
+	case PostgreSQL:
 		dialector = postgres.Open(db.GetConnectionString())
-	case 3:
-		sqlserver.Open(db.GetConnectionString())
+	case SQLServer:
+		dialector = sqlserver.Open(db.GetConnectionString())
 	}
 
 	return dialector
@@ -125,14 +133,24 @@ type Manager interface {
 
 type RelationalDatabaseManager interface {
 	Manager
-	GetType() int // Get storage type
+	GetType() RDBMS // Get storage type
 	GetRetryInterval() time.Duration
 	GetConfig() *gorm.Config
 	GetDialector() gorm.Dialector
 }
 
 func connectRdbms(s RelationalDatabaseManager) (*gorm.DB, error) {
-	return gorm.Open(s.GetDialector(), s.GetConfig())
+
+	log.Printf("Connecting to %v: %v", s.GetType().String(), s.GetConnectionString())
+
+	db, err := gorm.Open(s.GetDialector(), s.GetConfig())
+
+	if err != nil {
+		log.Printf("ErrOpenConnection: %v", err)
+		return nil, err
+	}
+
+	return db, nil
 }
 
 func reconnectRdbms(s RelationalDatabaseManager) (*gorm.DB, error) {
@@ -145,7 +163,8 @@ func reconnectRdbms(s RelationalDatabaseManager) (*gorm.DB, error) {
 			return db, nil
 		}
 
-		log.Printf("Cannot connect to %v: %v", s.GetType(), err)
+		log.Printf("Failed to connect to %v: %v", s.GetConnectionString(), err)
+
 		time.Sleep(interval)
 	}
 }
@@ -159,15 +178,14 @@ func Relational(s RelationalDatabaseManager) (db *gorm.DB, err error) {
 	}
 
 	if connections[dsn] == nil {
-		once.Do(func() {
-			db, err := reconnectRdbms(s)
 
-			if err != nil {
-				log.Fatal(err)
-			}
+		db, err := reconnectRdbms(s)
 
-			connections[dsn] = db
-		})
+		if err != nil {
+			return db, err
+		}
+
+		connections[dsn] = db
 	}
 
 	return connections[dsn], err
